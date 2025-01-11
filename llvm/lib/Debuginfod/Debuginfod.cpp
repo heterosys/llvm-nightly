@@ -41,13 +41,20 @@
 #include "llvm/Support/xxhash.h"
 
 #include <atomic>
+#include <optional>
 #include <thread>
 
 namespace llvm {
 
 using llvm::object::BuildIDRef;
 
-static std::string uniqueKey(llvm::StringRef S) {
+namespace {
+std::optional<SmallVector<StringRef>> DebuginfodUrls;
+// Many Readers/Single Writer lock protecting the global debuginfod URL list.
+llvm::sys::RWMutex UrlsMutex;
+} // namespace
+
+std::string getDebuginfodCacheKey(llvm::StringRef S) {
   return utostr(xxh3_64bits(S));
 }
 
@@ -62,13 +69,27 @@ bool canUseDebuginfod() {
 }
 
 SmallVector<StringRef> getDefaultDebuginfodUrls() {
-  const char *DebuginfodUrlsEnv = std::getenv("DEBUGINFOD_URLS");
-  if (DebuginfodUrlsEnv == nullptr)
-    return SmallVector<StringRef>();
+  std::shared_lock<llvm::sys::RWMutex> ReadGuard(UrlsMutex);
+  if (!DebuginfodUrls) {
+    // Only read from the environment variable if the user hasn't already
+    // set the value.
+    ReadGuard.unlock();
+    std::unique_lock<llvm::sys::RWMutex> WriteGuard(UrlsMutex);
+    DebuginfodUrls = SmallVector<StringRef>();
+    if (const char *DebuginfodUrlsEnv = std::getenv("DEBUGINFOD_URLS")) {
+      StringRef(DebuginfodUrlsEnv)
+          .split(DebuginfodUrls.value(), " ", -1, false);
+    }
+    WriteGuard.unlock();
+    ReadGuard.lock();
+  }
+  return DebuginfodUrls.value();
+}
 
-  SmallVector<StringRef> DebuginfodUrls;
-  StringRef(DebuginfodUrlsEnv).split(DebuginfodUrls, " ");
-  return DebuginfodUrls;
+// Set the default debuginfod URL list, override the environment variable.
+void setDefaultDebuginfodUrls(const SmallVector<StringRef> &URLs) {
+  std::unique_lock<llvm::sys::RWMutex> WriteGuard(UrlsMutex);
+  DebuginfodUrls = URLs;
 }
 
 /// Finds a default local file caching directory for the debuginfod client,
@@ -85,6 +106,14 @@ Expected<std::string> getDefaultDebuginfodCacheDirectory() {
   return std::string(CacheDirectory);
 }
 
+Expected<llvm::CachePruningPolicy> getDefaultDebuginfodCachePruningPolicy() {
+  Expected<CachePruningPolicy> PruningPolicyOrErr =
+      parseCachePruningPolicy(std::getenv("DEBUGINFOD_CACHE_POLICY"));
+  if (!PruningPolicyOrErr)
+    return PruningPolicyOrErr.takeError();
+  return *PruningPolicyOrErr;
+}
+
 std::chrono::milliseconds getDefaultDebuginfodTimeout() {
   long Timeout;
   const char *DebuginfodTimeoutEnv = std::getenv("DEBUGINFOD_TIMEOUT");
@@ -99,27 +128,43 @@ std::chrono::milliseconds getDefaultDebuginfodTimeout() {
 /// cache and return the cached file path. They first search the local cache,
 /// followed by the debuginfod servers.
 
-Expected<std::string> getCachedOrDownloadSource(BuildIDRef ID,
-                                                StringRef SourceFilePath) {
+std::string getDebuginfodSourceUrlPath(BuildIDRef ID,
+                                       StringRef SourceFilePath) {
   SmallString<64> UrlPath;
   sys::path::append(UrlPath, sys::path::Style::posix, "buildid",
                     buildIDToString(ID), "source",
                     sys::path::convert_to_slash(SourceFilePath));
-  return getCachedOrDownloadArtifact(uniqueKey(UrlPath), UrlPath);
+  return std::string(UrlPath);
 }
 
-Expected<std::string> getCachedOrDownloadExecutable(BuildIDRef ID) {
+Expected<std::string> getCachedOrDownloadSource(BuildIDRef ID,
+                                                StringRef SourceFilePath) {
+  std::string UrlPath = getDebuginfodSourceUrlPath(ID, SourceFilePath);
+  return getCachedOrDownloadArtifact(getDebuginfodCacheKey(UrlPath), UrlPath);
+}
+
+std::string getDebuginfodExecutableUrlPath(BuildIDRef ID) {
   SmallString<64> UrlPath;
   sys::path::append(UrlPath, sys::path::Style::posix, "buildid",
                     buildIDToString(ID), "executable");
-  return getCachedOrDownloadArtifact(uniqueKey(UrlPath), UrlPath);
+  return std::string(UrlPath);
 }
 
-Expected<std::string> getCachedOrDownloadDebuginfo(BuildIDRef ID) {
+Expected<std::string> getCachedOrDownloadExecutable(BuildIDRef ID) {
+  std::string UrlPath = getDebuginfodExecutableUrlPath(ID);
+  return getCachedOrDownloadArtifact(getDebuginfodCacheKey(UrlPath), UrlPath);
+}
+
+std::string getDebuginfodDebuginfoUrlPath(BuildIDRef ID) {
   SmallString<64> UrlPath;
   sys::path::append(UrlPath, sys::path::Style::posix, "buildid",
                     buildIDToString(ID), "debuginfo");
-  return getCachedOrDownloadArtifact(uniqueKey(UrlPath), UrlPath);
+  return std::string(UrlPath);
+}
+
+Expected<std::string> getCachedOrDownloadDebuginfo(BuildIDRef ID) {
+  std::string UrlPath = getDebuginfodDebuginfoUrlPath(ID);
+  return getCachedOrDownloadArtifact(getDebuginfodCacheKey(UrlPath), UrlPath);
 }
 
 // General fetching function.
@@ -132,9 +177,15 @@ Expected<std::string> getCachedOrDownloadArtifact(StringRef UniqueKey,
     return CacheDirOrErr.takeError();
   CacheDir = *CacheDirOrErr;
 
-  return getCachedOrDownloadArtifact(UniqueKey, UrlPath, CacheDir,
-                                     getDefaultDebuginfodUrls(),
-                                     getDefaultDebuginfodTimeout());
+  Expected<llvm::CachePruningPolicy> PruningPolicyOrErr =
+      getDefaultDebuginfodCachePruningPolicy();
+  if (!PruningPolicyOrErr)
+    return PruningPolicyOrErr.takeError();
+  llvm::CachePruningPolicy PruningPolicy = *PruningPolicyOrErr;
+
+  return getCachedOrDownloadArtifact(
+      UniqueKey, UrlPath, CacheDir, getDefaultDebuginfodUrls(),
+      getDefaultDebuginfodTimeout(), PruningPolicy);
 }
 
 namespace {
@@ -213,7 +264,8 @@ static SmallVector<std::string, 0> getHeaders() {
 
 Expected<std::string> getCachedOrDownloadArtifact(
     StringRef UniqueKey, StringRef UrlPath, StringRef CacheDirectoryPath,
-    ArrayRef<StringRef> DebuginfodUrls, std::chrono::milliseconds Timeout) {
+    ArrayRef<StringRef> DebuginfodUrls, std::chrono::milliseconds Timeout,
+    llvm::CachePruningPolicy policy) {
   SmallString<64> AbsCachedArtifactPath;
   sys::path::append(AbsCachedArtifactPath, CacheDirectoryPath,
                     "llvmcache-" + UniqueKey);
@@ -267,11 +319,7 @@ Expected<std::string> getCachedOrDownloadArtifact(
         continue;
     }
 
-    Expected<CachePruningPolicy> PruningPolicyOrErr =
-        parseCachePruningPolicy(std::getenv("DEBUGINFOD_CACHE_POLICY"));
-    if (!PruningPolicyOrErr)
-      return PruningPolicyOrErr.takeError();
-    pruneCache(CacheDirectoryPath, *PruningPolicyOrErr);
+    pruneCache(CacheDirectoryPath, policy);
 
     // Return the path to the artifact on disk.
     return std::string(AbsCachedArtifactPath);
@@ -311,7 +359,8 @@ DebuginfodLogEntry DebuginfodLog::pop() {
 }
 
 DebuginfodCollection::DebuginfodCollection(ArrayRef<StringRef> PathsRef,
-                                           DebuginfodLog &Log, ThreadPool &Pool,
+                                           DebuginfodLog &Log,
+                                           ThreadPoolInterface &Pool,
                                            double MinInterval)
     : Log(Log), Pool(Pool), MinInterval(MinInterval) {
   for (StringRef Path : PathsRef)
@@ -377,7 +426,7 @@ Error DebuginfodCollection::findBinaries(StringRef Path) {
   sys::fs::recursive_directory_iterator I(Twine(Path), EC), E;
   std::mutex IteratorMutex;
   ThreadPoolTaskGroup IteratorGroup(Pool);
-  for (unsigned WorkerIndex = 0; WorkerIndex < Pool.getThreadCount();
+  for (unsigned WorkerIndex = 0; WorkerIndex < Pool.getMaxConcurrency();
        WorkerIndex++) {
     IteratorGroup.async([&, this]() -> void {
       std::string FilePath;

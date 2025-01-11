@@ -8,11 +8,12 @@
 
 #include "lldb/DataFormatters/CXXFunctionPointer.h"
 
-#include "lldb/Core/ValueObject.h"
 #include "lldb/Target/ABI.h"
 #include "lldb/Target/SectionLoadList.h"
 #include "lldb/Target/Target.h"
 #include "lldb/Utility/Stream.h"
+#include "lldb/ValueObject/ValueObject.h"
+#include "lldb/lldb-enumerations.h"
 
 #include <string>
 
@@ -76,7 +77,10 @@ bool lldb_private::formatters::CXXFunctionPointerSummaryProvider(
     }
   }
   if (sstr.GetSize() > 0) {
-    stream.Printf("(%s)", sstr.GetData());
+    if (valobj.GetValueType() == lldb::eValueTypeVTableEntry)
+      stream.PutCString(sstr.GetData());
+    else
+      stream.Printf("(%s)", sstr.GetData());
     return true;
   } else
     return false;

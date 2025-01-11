@@ -46,6 +46,13 @@ Constant<ExtentType> AsConstantShape(const ConstantSubscripts &);
 ConstantSubscripts AsConstantExtents(const Constant<ExtentType> &);
 std::optional<ConstantSubscripts> AsConstantExtents(
     FoldingContext &, const Shape &);
+inline std::optional<ConstantSubscripts> AsConstantExtents(
+    FoldingContext &foldingContext, const std::optional<Shape> &maybeShape) {
+  if (maybeShape) {
+    return AsConstantExtents(foldingContext, *maybeShape);
+  }
+  return std::nullopt;
+}
 Shape AsShape(const ConstantSubscripts &);
 std::optional<Shape> AsShape(const std::optional<ConstantSubscripts> &);
 
@@ -110,6 +117,14 @@ MaybeExtentExpr GetExtent(const Subscript &, const NamedEntity &, int dimension,
 MaybeExtentExpr GetExtent(FoldingContext &, const Subscript &,
     const NamedEntity &, int dimension, bool invariantOnly = true);
 
+// Similar analyses for coarrays
+MaybeExtentExpr GetLCOBOUND(
+    const Symbol &, int dimension, bool invariantOnly = true);
+MaybeExtentExpr GetUCOBOUND(
+    const Symbol &, int dimension, bool invariantOnly = true);
+Shape GetLCOBOUNDs(const Symbol &, bool invariantOnly = true);
+Shape GetUCOBOUNDs(const Symbol &, bool invariantOnly = true);
+
 // Compute an element count for a triplet or trip count for a DO.
 ExtentExpr CountTrips(
     ExtentExpr &&lower, ExtentExpr &&upper, ExtentExpr &&stride);
@@ -121,6 +136,12 @@ MaybeExtentExpr CountTrips(
 // Computes SIZE() == PRODUCT(shape)
 MaybeExtentExpr GetSize(Shape &&);
 ConstantSubscript GetSize(const ConstantSubscripts &);
+inline MaybeExtentExpr GetSize(const std::optional<Shape> &maybeShape) {
+  if (maybeShape) {
+    return GetSize(Shape(*maybeShape));
+  }
+  return std::nullopt;
+}
 
 // Utility predicate: does an expression reference any implied DO index?
 bool ContainsAnyImpliedDoIndex(const ExtentExpr &);

@@ -77,9 +77,11 @@ static CXTypeKind GetBuiltinTypeKind(const BuiltinType *BT) {
     BTCASE(OCLEvent);
     BTCASE(OCLQueue);
     BTCASE(OCLReserveID);
-  default:
-    return CXType_Unexposed;
-  }
+#define HLSL_INTANGIBLE_TYPE(Name, Id, SingletonId) BTCASE(Id);
+#include "clang/Basic/HLSLIntangibleTypes.def"
+    default:
+      return CXType_Unexposed;
+    }
 #undef BTCASE
 }
 
@@ -311,6 +313,20 @@ CXString clang_getTypeSpelling(CXType CT) {
   return cxstring::createDup(OS.str());
 }
 
+CXString clang_getTypePrettyPrinted(CXType CT, CXPrintingPolicy cxPolicy) {
+  QualType T = GetQualType(CT);
+  if (T.isNull())
+    return cxstring::createEmpty();
+
+  SmallString<64> Str;
+  llvm::raw_svector_ostream OS(Str);
+  PrintingPolicy *UserPolicy = static_cast<PrintingPolicy *>(cxPolicy);
+
+  T.print(OS, *UserPolicy);
+
+  return cxstring::createDup(OS.str());
+}
+
 CXType clang_getTypedefDeclUnderlyingType(CXCursor C) {
   using namespace cxcursor;
   CXTranslationUnit TU = cxcursor::getCursorTU(C);
@@ -379,7 +395,7 @@ int clang_getFieldDeclBitWidth(CXCursor C) {
 
     if (const FieldDecl *FD = dyn_cast_or_null<FieldDecl>(D)) {
       if (FD->isBitField() && !FD->getBitWidth()->isValueDependent())
-        return FD->getBitWidthValue(getCursorContext(C));
+        return FD->getBitWidthValue();
     }
   }
 
@@ -618,6 +634,7 @@ CXString clang_getTypeKindSpelling(enum CXTypeKind K) {
     TKIND(Pipe);
     TKIND(Attributed);
     TKIND(BTFTagAttributed);
+    TKIND(HLSLAttributedResource);
     TKIND(BFloat16);
 #define IMAGE_TYPE(ImgType, Id, SingletonId, Access, Suffix) TKIND(Id);
 #include "clang/Basic/OpenCLImageTypes.def"
@@ -628,6 +645,8 @@ CXString clang_getTypeKindSpelling(enum CXTypeKind K) {
     TKIND(OCLEvent);
     TKIND(OCLQueue);
     TKIND(OCLReserveID);
+#define HLSL_INTANGIBLE_TYPE(Name, Id, SingletonId) TKIND(Id);
+#include "clang/Basic/HLSLIntangibleTypes.def"
     TKIND(Atomic);
   }
 #undef TKIND
@@ -678,6 +697,9 @@ CXCallingConv clang_getFunctionTypeCallingConv(CXType X) {
       TCALLINGCONV(SwiftAsync);
       TCALLINGCONV(PreserveMost);
       TCALLINGCONV(PreserveAll);
+      TCALLINGCONV(M68kRTD);
+      TCALLINGCONV(PreserveNone);
+      TCALLINGCONV(RISCVVectorCall);
     case CC_SpirFunction: return CXCallingConv_Unexposed;
     case CC_AMDGPUKernelCall: return CXCallingConv_Unexposed;
     case CC_OpenCLKernel: return CXCallingConv_Unexposed;
