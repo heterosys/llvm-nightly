@@ -5,6 +5,8 @@ import io
 import itertools
 from mlir.ir import *
 from mlir.dialects.builtin import ModuleOp
+from mlir.dialects import arith
+from mlir.dialects._ods_common import _cext
 
 
 def run(f):
@@ -581,14 +583,24 @@ def testOperationPrint():
         r"""
     func.func @f1(%arg0: i32) -> i32 {
       %0 = arith.constant dense<[1, 2, 3, 4]> : tensor<4xi32> loc("nom")
+      %1 = arith.constant dense_resource<resource1> : tensor<3xi64>
       return %arg0 : i32
     }
+
+    {-#
+      dialect_resources: {
+          builtin: {
+            resource1: "0x08000000010000000000000002000000000000000300000000000000"
+          }
+        }
+      #-}
   """,
         ctx,
     )
 
     # Test print to stdout.
     # CHECK: return %arg0 : i32
+    # CHECK: resource1: "0x08
     module.operation.print()
 
     # Test print to text file.
@@ -605,7 +617,8 @@ def testOperationPrint():
     module.operation.write_bytecode(bytecode_stream, desired_version=1)
     bytecode = bytecode_stream.getvalue()
     assert bytecode.startswith(b"ML\xefR"), "Expected bytecode to start with MLïR"
-    module_roundtrip = Module.parse(bytecode, ctx)
+    ctx2 = Context()
+    module_roundtrip = Module.parse(bytecode, ctx2)
     f = io.StringIO()
     module_roundtrip.operation.print(file=f)
     roundtrip_value = f.getvalue()
@@ -620,19 +633,32 @@ def testOperationPrint():
     print(bytes_value.__class__)
     print(bytes_value)
 
-    # Test get_asm local_scope.
+    # Test print local_scope.
     # CHECK: constant dense<[1, 2, 3, 4]> : tensor<4xi32> loc("nom")
     module.operation.print(enable_debug_info=True, use_local_scope=True)
 
-    # Test get_asm with options.
+    # Test printing using state.
+    state = AsmState(module.operation)
+    # CHECK: constant dense<[1, 2, 3, 4]> : tensor<4xi32>
+    module.operation.print(state)
+
+    # Test print with options.
     # CHECK: value = dense_resource<__elided__> : tensor<4xi32>
-    # CHECK: "func.return"(%arg0) : (i32) -> () -:4:7
+    # CHECK: "func.return"(%arg0) : (i32) -> () -:5:7
+    # CHECK-NOT: resource1: "0x08
     module.operation.print(
         large_elements_limit=2,
         enable_debug_info=True,
         pretty_debug_info=True,
         print_generic_op_form=True,
         use_local_scope=True,
+    )
+
+    # Test print with skip_regions option
+    # CHECK: func.func @f1(%arg0: i32) -> i32
+    # CHECK-NOT: func.return
+    module.body.operations[0].print(
+        skip_regions=True,
     )
 
 
@@ -646,6 +672,7 @@ def testKnownOpView():
       %1 = "custom.f32"() : () -> f32
       %2 = "custom.f32"() : () -> f32
       %3 = arith.addf %1, %2 : f32
+      %4 = arith.constant 0 : i32
     """
         )
         print(module)
@@ -667,6 +694,31 @@ def testKnownOpView():
         custom = module.body.operations[0]
         # CHECK: OpView object
         print(repr(custom))
+
+        # constant should map to an extension OpView class in the arithmetic dialect.
+        constant = module.body.operations[3]
+        # CHECK: <mlir.dialects.arith.ConstantOp object
+        print(repr(constant))
+        # Checks that the arith extension is being registered successfully
+        # (literal_value is a property on the extension class but not on the default OpView).
+        # CHECK: literal value 0
+        print("literal value", constant.literal_value)
+
+        # Checks that "late" registration/replacement (i.e., post all module loading/initialization)
+        # is working correctly.
+        @_cext.register_operation(arith._Dialect, replace=True)
+        class ConstantOp(arith.ConstantOp):
+            def __init__(self, result, value, *, loc=None, ip=None):
+                if isinstance(value, int):
+                    super().__init__(IntegerAttr.get(result, value), loc=loc, ip=ip)
+                elif isinstance(value, float):
+                    super().__init__(FloatAttr.get(result, value), loc=loc, ip=ip)
+                else:
+                    super().__init__(value, loc=loc, ip=ip)
+
+        constant = module.body.operations[3]
+        # CHECK: <__main__.testKnownOpView.<locals>.ConstantOp object
+        print(repr(constant))
 
 
 # CHECK-LABEL: TEST: testSingleResultProperty
@@ -982,3 +1034,78 @@ def testOperationParse():
         print(
             f"op_with_source_name: {o.get_asm(enable_debug_info=True, use_local_scope=True)}"
         )
+
+
+# CHECK-LABEL: TEST: testOpWalk
+@run
+def testOpWalk():
+    ctx = Context()
+    ctx.allow_unregistered_dialects = True
+    module = Module.parse(
+        r"""
+    builtin.module {
+      func.func @f() {
+        func.return
+      }
+    }
+  """,
+        ctx,
+    )
+
+    def callback(op):
+        print(op.name)
+        return WalkResult.ADVANCE
+
+    # Test post-order walk (default).
+    # CHECK-NEXT:  Post-order
+    # CHECK-NEXT:  func.return
+    # CHECK-NEXT:  func.func
+    # CHECK-NEXT:  builtin.module
+    print("Post-order")
+    module.operation.walk(callback)
+
+    # Test pre-order walk.
+    # CHECK-NEXT:  Pre-order
+    # CHECK-NEXT:  builtin.module
+    # CHECK-NEXT:  func.fun
+    # CHECK-NEXT:  func.return
+    print("Pre-order")
+    module.operation.walk(callback, WalkOrder.PRE_ORDER)
+
+    # Test interrput.
+    # CHECK-NEXT:  Interrupt post-order
+    # CHECK-NEXT:  func.return
+    print("Interrupt post-order")
+
+    def callback(op):
+        print(op.name)
+        return WalkResult.INTERRUPT
+
+    module.operation.walk(callback)
+
+    # Test skip.
+    # CHECK-NEXT:  Skip pre-order
+    # CHECK-NEXT:  builtin.module
+    print("Skip pre-order")
+
+    def callback(op):
+        print(op.name)
+        return WalkResult.SKIP
+
+    module.operation.walk(callback, WalkOrder.PRE_ORDER)
+
+    # Test exception.
+    # CHECK: Exception
+    # CHECK-NEXT: func.return
+    # CHECK-NEXT: Exception raised
+    print("Exception")
+
+    def callback(op):
+        print(op.name)
+        raise ValueError
+        return WalkResult.ADVANCE
+
+    try:
+        module.operation.walk(callback)
+    except RuntimeError:
+        print("Exception raised")

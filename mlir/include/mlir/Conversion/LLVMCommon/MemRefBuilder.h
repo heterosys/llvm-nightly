@@ -104,7 +104,7 @@ public:
   /// - aligned pointer;
   /// - offset;
   /// - <rank> sizes;
-  /// - <rank> shapes;
+  /// - <rank> strides;
   /// where <rank> is the MemRef rank as provided in `type`.
   static Value pack(OpBuilder &builder, Location loc,
                     const LLVMTypeConverter &converter, MemRefType type,
@@ -120,8 +120,6 @@ public:
   static unsigned getNumUnpackedValues(MemRefType type);
 
 private:
-  bool useOpaquePointers();
-
   // Cached index type.
   Type indexType;
 };

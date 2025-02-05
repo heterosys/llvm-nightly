@@ -7,12 +7,12 @@
 # that is reserved/intended for shared libraries only.
 add_mlir_library(MLIRSparseTensorRuntime
   File.cpp
-  NNZ.cpp
+  MapRef.cpp
   Storage.cpp
 
   EXCLUDE_FROM_LIBMLIR
-
-  LINK_LIBS PUBLIC
+  )
+mlir_target_link_libraries(MLIRSparseTensorRuntime PUBLIC
   MLIRSparseTensorEnums
   mlir_float16_utils
   )

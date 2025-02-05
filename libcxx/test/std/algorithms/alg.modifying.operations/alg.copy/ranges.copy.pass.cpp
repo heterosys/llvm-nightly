@@ -26,6 +26,7 @@
 
 #include "almost_satisfies_types.h"
 #include "test_iterators.h"
+#include "test_macros.h"
 #include "type_algorithms.h"
 
 template <class In, class Out = In, class Sent = sentinel_wrapper<In>>
@@ -99,6 +100,28 @@ constexpr void test_iterators() {
 }
 // clang-format on
 
+#if TEST_STD_VER >= 23
+constexpr bool test_vector_bool(std::size_t N) {
+  std::vector<bool> in(N, false);
+  for (std::size_t i = 0; i < N; i += 2)
+    in[i] = true;
+
+  { // Test copy with aligned bytes
+    std::vector<bool> out(N);
+    std::ranges::copy(in, out.begin());
+    assert(in == out);
+  }
+  { // Test copy with unaligned bytes
+    std::vector<bool> out(N + 8);
+    std::ranges::copy(in, out.begin() + 4);
+    for (std::size_t i = 0; i < N; ++i)
+      assert(out[i + 4] == in[i]);
+  }
+
+  return true;
+}
+#endif
+
 constexpr bool test() {
   types::for_each(types::forward_iterator_list<int*>{}, []<class Out>() {
     test_iterators<cpp20_input_iterator<int*>, Out, sentinel_wrapper<cpp20_input_iterator<int*>>>();
@@ -128,8 +151,9 @@ constexpr bool test() {
   { // check that an iterator is returned with a borrowing range
     std::array in{1, 2, 3, 4};
     std::array<int, 4> out;
-    std::same_as<std::ranges::in_out_result<int*, int*>> auto ret = std::ranges::copy(std::views::all(in), out.data());
-    assert(ret.in == in.data() + 4);
+    std::same_as<std::ranges::in_out_result<std::array<int, 4>::iterator, int*>> auto ret =
+        std::ranges::copy(std::views::all(in), out.data());
+    assert(ret.in == in.end());
     assert(ret.out == out.data() + 4);
     assert(in == out);
   }
@@ -202,6 +226,18 @@ constexpr bool test() {
       assert(out[2].canCopy);
     }
   }
+
+#if TEST_STD_VER >= 23
+  { // Test vector<bool>::iterator optimization
+    assert(test_vector_bool(8));
+    assert(test_vector_bool(19));
+    assert(test_vector_bool(32));
+    assert(test_vector_bool(49));
+    assert(test_vector_bool(64));
+    assert(test_vector_bool(199));
+    assert(test_vector_bool(256));
+  }
+#endif
 
   return true;
 }

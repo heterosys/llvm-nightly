@@ -15,11 +15,13 @@
 #define MLIR_DIALECT_LLVMIR_NVVMDIALECT_H_
 
 #include "mlir/Bytecode/BytecodeOpInterface.h"
-#include "mlir/Dialect/GPU/IR/CompilationInterfaces.h"
+#include "mlir/Dialect/LLVMIR/BasicPtxBuilderInterface.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/OpDefinition.h"
+#include "mlir/Interfaces/InferIntRangeInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Target/LLVMIR/ModuleTranslation.h"
 #include "llvm/IR/IntrinsicsNVPTX.h"
 
 #include "mlir/Dialect/LLVMIR/NVVMOpsEnums.h.inc"
@@ -27,14 +29,21 @@
 namespace mlir {
 namespace NVVM {
 
-#include "mlir/Dialect/LLVMIR/NVVMOpsInterface.h.inc"
+// Shared memory has 128-bit alignment
+constexpr int kSharedMemoryAlignmentBit = 128;
 
 /// NVVM memory space identifiers.
 enum NVVMMemorySpace {
   /// Global memory space identifier.
   kGlobalMemorySpace = 1,
   /// Shared memory space identifier.
-  kSharedMemorySpace = 3
+  kSharedMemorySpace = 3,
+  /// Constant memory space identifier.
+  kConstantMemorySpace = 4,
+  /// Tensor memory space identifier.
+  /// Tensor memory is available only in arch-accelerated
+  /// variants from sm100 onwards.
+  kTensorMemorySpace = 6
 };
 
 /// Return the element type and number of elements associated with a wmma matrix

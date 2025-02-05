@@ -28,6 +28,7 @@ class Module;
 class AttrBuilder;
 class Function;
 class Triple;
+class TargetMachine;
 
 namespace codegen {
 
@@ -89,8 +90,6 @@ bool getDisableTailCalls();
 
 bool getStackSymbolOrdering();
 
-unsigned getOverrideStackAlignment();
-
 bool getStackRealign();
 
 std::string getTrapFuncName();
@@ -98,8 +97,6 @@ std::string getTrapFuncName();
 bool getUseCtors();
 
 bool getDisableIntegratedAS();
-
-bool getRelaxELFRelocations();
 
 bool getDataSections();
 std::optional<bool> getExplicitDataSections();
@@ -118,9 +115,14 @@ unsigned getTLSSize();
 bool getEmulatedTLS();
 std::optional<bool> getExplicitEmulatedTLS();
 
+bool getEnableTLSDESC();
+std::optional<bool> getExplicitEnableTLSDESC();
+
 bool getUniqueSectionNames();
 
 bool getUniqueBasicBlockSectionNames();
+
+bool getSeparateNamedSections();
 
 llvm::EABI getEABIVersion();
 
@@ -133,6 +135,8 @@ bool getEnableAddrsig();
 bool getEmitCallSiteInfo();
 
 bool getEnableMachineFunctionSplitter();
+
+bool getEnableStaticDataPartitioning();
 
 bool getEnableDebugEntryValues();
 
@@ -156,6 +160,8 @@ bool getXCOFFReadOnlyPointers();
 struct RegisterCodeGenFlags {
   RegisterCodeGenFlags();
 };
+
+bool getEnableBBAddrMap();
 
 llvm::BasicBlockSection getBBSectionsMode(llvm::TargetOptions &Options);
 
@@ -186,6 +192,14 @@ void setFunctionAttributes(StringRef CPU, StringRef Features, Module &M);
 /// Should value-tracking variable locations / instruction referencing be
 /// enabled by default for this triple?
 bool getDefaultValueTrackingVariableLocations(const llvm::Triple &T);
+
+/// Creates a TargetMachine instance with the options defined on the command
+/// line. This can be used for tools that do not need further customization of
+/// the TargetOptions.
+Expected<std::unique_ptr<TargetMachine>> createTargetMachineForTriple(
+    StringRef TargetTriple,
+    CodeGenOptLevel OptLevel = CodeGenOptLevel::Default);
+
 } // namespace codegen
 } // namespace llvm
 
